@@ -78,6 +78,17 @@ If SmartScreen shows a blue "Windows protected your PC" box, click
 **More info → Run anyway**. Removing the warning entirely requires a paid
 code-signing certificate, which this free project doesn't use.
 
+## Storage & OneDrive
+
+- **Model files download once** the first time you use each model — to
+  `~/.cache/huggingface` (faster-whisper) or `~/.cache/whisper` (openai-whisper),
+  **not** into the app folder. So they won't bloat a OneDrive-synced folder.
+  Sizes range from ~75 MB (`tiny`) to ~1.5 GB (`large`).
+- Running the app from a **OneDrive** folder works fine. Transcripts you save into
+  a OneDrive folder will sync like any other file.
+- If OneDrive "Files On-Demand" has made the scripts cloud-only (cloud icon),
+  double-clicking downloads them automatically before running.
+
 ## Project structure
 
 | File | Purpose |
