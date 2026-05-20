@@ -276,6 +276,10 @@ def apply_theme(root: tk.Tk) -> None:
                  background=ACCENT, bordercolor=BORDER, lightcolor=ACCENT,
                  darkcolor=ACCENT, thickness=6)
 
+    # Checkbutton
+    st.configure("TCheckbutton", background=BG, foreground=TEXT, focuscolor=BG)
+    st.map("TCheckbutton", background=[("active", BG)], foreground=[("disabled", FAINT)])
+
     # Combobox popup list
     root.option_add("*TCombobox*Listbox.background", FIELD)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
@@ -312,6 +316,9 @@ class App:
         self.gen_model = tk.StringVar(value=s.get("gen_model", SA_MODELS[0][1]))
         self.gen_duration = tk.IntVar(value=s.get("gen_duration", 30))
         self.gen_steps = tk.IntVar(value=s.get("gen_steps", 8))
+        self.gen_cfg = tk.DoubleVar(value=s.get("gen_cfg", 1.0))
+        self.gen_seed = tk.StringVar(value="-1")
+        self.gen_autoplay = tk.BooleanVar(value=s.get("gen_autoplay", True))
         self.gen_output = tk.StringVar()
         self.gen_status = tk.StringVar(value="Describe the audio you want, then Generate.")
         self._gen_busy = False
@@ -332,6 +339,8 @@ class App:
             "gen_model": self.gen_model.get(),
             "gen_duration": int(self.gen_duration.get() or 30),
             "gen_steps": int(self.gen_steps.get() or 8),
+            "gen_cfg": float(self.gen_cfg.get() or 1.0),
+            "gen_autoplay": bool(self.gen_autoplay.get()),
         })
 
     def _check_device(self):
@@ -477,25 +486,22 @@ class App:
         self.gen_prompt.pack(fill=tk.X)
         self.gen_prompt.insert("1.0", "Lo-fi hip hop beat, mellow piano, 80 BPM")
 
-        # Options
+        # Model (full width)
+        ttk.Label(outer, text="MODEL", style="Section.TLabel").pack(anchor=tk.W)
+        ttk.Combobox(outer, textvariable=self.gen_model, state="readonly",
+                     values=[lbl for _, lbl in SA_MODELS]).pack(fill=tk.X, ipady=2, pady=(4, 12))
+
+        # Numeric options: SECONDS | STEPS | GUIDANCE | SEED
         opts = ttk.Frame(outer)
         opts.pack(fill=tk.X, pady=(0, 6))
-        opts.columnconfigure(0, weight=3, uniform="g")
-        opts.columnconfigure(1, weight=1, uniform="g")
-        opts.columnconfigure(2, weight=1, uniform="g")
-
-        c0 = ttk.Frame(opts); c0.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        ttk.Label(c0, text="MODEL", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
-        ttk.Combobox(c0, textvariable=self.gen_model, state="readonly",
-                     values=[lbl for _, lbl in SA_MODELS]).pack(fill=tk.X, ipady=2)
-
-        c1 = ttk.Frame(opts); c1.grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        ttk.Label(c1, text="SECONDS", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
-        ttk.Spinbox(c1, from_=1, to=180, textvariable=self.gen_duration).pack(fill=tk.X, ipady=2)
-
-        c2 = ttk.Frame(opts); c2.grid(row=0, column=2, sticky="ew")
-        ttk.Label(c2, text="STEPS", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
-        ttk.Spinbox(c2, from_=4, to=100, textvariable=self.gen_steps).pack(fill=tk.X, ipady=2)
+        for i in range(4):
+            opts.columnconfigure(i, weight=1, uniform="g")
+        self._gspin(opts, 0, "SECONDS", self.gen_duration, 1, 180, 1)
+        self._gspin(opts, 1, "STEPS", self.gen_steps, 4, 100, 1)
+        self._gspin(opts, 2, "GUIDANCE", self.gen_cfg, 1.0, 15.0, 0.5)
+        c3 = ttk.Frame(opts); c3.grid(row=0, column=3, sticky="ew")
+        ttk.Label(c3, text="SEED (-1=random)", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        ttk.Entry(c3, textvariable=self.gen_seed).pack(fill=tk.X, ipady=2)
 
         # Output file
         ttk.Label(outer, text="OUTPUT WAV", style="Section.TLabel").pack(anchor=tk.W, pady=(12, 0))
@@ -509,7 +515,11 @@ class App:
             text="Stable Audio 3 is gated: accept its license on Hugging Face and run "
                  "`huggingface-cli login` once. First run downloads the model.",
             style="Muted.TLabel",
-        ).pack(anchor=tk.W, pady=(0, 14))
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        ttk.Checkbutton(outer, text="Play the result automatically when finished",
+                        variable=self.gen_autoplay, style="TCheckbutton").pack(
+                            anchor=tk.W, pady=(0, 12))
 
         # Actions
         act = ttk.Frame(outer)
@@ -537,6 +547,13 @@ class App:
         self.gen_play_btn = ttk.Button(foot, text="Play / open file",
                                        command=self._open_gen_file, state="disabled")
         self.gen_play_btn.pack(side=tk.LEFT)
+
+    def _gspin(self, parent, col, label, var, lo, hi, inc):
+        cell = ttk.Frame(parent)
+        cell.grid(row=0, column=col, sticky="ew", padx=(0, 10))
+        ttk.Label(cell, text=label, style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        ttk.Spinbox(cell, from_=lo, to=hi, increment=inc, textvariable=var).pack(
+            fill=tk.X, ipady=2)
 
     def pick_gen_output(self):
         path = filedialog.asksaveasfilename(
@@ -593,13 +610,20 @@ class App:
         try:
             duration = max(1, int(self.gen_duration.get()))
             steps = max(1, int(self.gen_steps.get()))
+            cfg = float(self.gen_cfg.get())
         except (tk.TclError, ValueError):
-            messagebox.showerror("Whisper Transcriber", "Seconds and Steps must be numbers.")
+            messagebox.showerror("Whisper Transcriber",
+                                 "Seconds, Steps and Guidance must be numbers.")
             return
+        try:
+            seed = int(str(self.gen_seed.get()).strip() or "-1")
+        except ValueError:
+            seed = -1
 
         cmd = [sys.executable, str(GEN_WORKER),
                "--prompt", prompt, "--model", model_id,
                "--duration", str(duration), "--steps", str(steps),
+               "--cfg", str(cfg), "--seed", str(seed),
                "--output", out]
         self._gen_output_file = Path(out)
         self._persist()
@@ -654,6 +678,8 @@ class App:
         self.gen_status.set(msg)
         if ok and self._gen_output_file and self._gen_output_file.exists():
             self.gen_play_btn.configure(state="normal")
+            if self.gen_autoplay.get():
+                self._open_gen_file()
 
     def _make_text_panel(self, parent):
         wrap = ttk.Frame(parent)
