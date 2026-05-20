@@ -1,8 +1,8 @@
 # Whisper Transcriber
 
-A simple, black-and-minimalist desktop GUI for [OpenAI Whisper](https://github.com/openai/whisper) — pick an audio or video file, choose a model, and get a transcript. Cross-platform (Windows, macOS, Linux), with a built-in dependency installer and automatic GPU acceleration when available.
+A simple, black-and-minimalist desktop GUI for OpenAI Whisper — pick an audio or video file, choose a model, and get a transcript. Cross-platform (Windows, macOS, Linux), with a built-in dependency installer and automatic GPU acceleration when available.
 
-> Built with Python + Tkinter (standard library only). It shells out to the `whisper` CLI from the `openai-whisper` package.
+> Built with Python + Tkinter (standard library only). It uses **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** (via the `whisper-ctranslate2` CLI) — smaller and ~4× faster than the reference implementation, with no PyTorch dependency — and falls back to [openai-whisper](https://github.com/openai/whisper) if that's what's installed.
 
 ## Features
 
@@ -22,9 +22,9 @@ A simple, black-and-minimalist desktop GUI for [OpenAI Whisper](https://github.c
 
 - Python 3.8+ (with Tkinter — included in the python.org installers)
 - [ffmpeg](https://ffmpeg.org/) on PATH
-- `openai-whisper` (pulls in PyTorch)
+- `whisper-ctranslate2` (the faster-whisper engine; no PyTorch needed)
 
-The included setup tool installs ffmpeg + openai-whisper for you.
+The included setup tool installs ffmpeg + the engine for you.
 
 ## Install & run
 
@@ -49,12 +49,15 @@ python3 whisper_gui.py       # the app
 
 ## GPU acceleration
 
-- **NVIDIA:** install the CUDA build of PyTorch matching your GPU, e.g.
+- **NVIDIA:** the faster-whisper engine uses CUDA via CTranslate2. If CUDA isn't
+  picked up, install the CUDA 12 libraries:
   ```bash
-  pip install torch --index-url https://download.pytorch.org/whl/cu128
+  pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
   ```
-  (use the index that matches your GPU/driver; cu128+ is required for RTX 50-series / Blackwell). The app auto-detects CUDA and shows "GPU acceleration" in the header.
-- **No GPU / CPU:** works out of the box; stick to `tiny`/`base`/`turbo` for reasonable speed.
+  (the setup tool does this automatically when it detects an NVIDIA GPU.) The app
+  auto-detects CUDA and shows "GPU acceleration" in the header.
+- **No GPU / CPU:** works out of the box — and faster-whisper is already several
+  times faster than the reference engine on CPU.
 
 ## Project structure
 

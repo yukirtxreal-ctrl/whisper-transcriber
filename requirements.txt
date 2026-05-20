@@ -1,13 +1,15 @@
 # Python dependencies for Whisper Transcriber.
 # The GUI itself uses only the Python standard library (tkinter).
-# Transcription needs openai-whisper (which pulls in PyTorch):
+# Transcription uses the faster-whisper engine via whisper-ctranslate2
+# (smaller and ~4x faster than openai-whisper; no PyTorch needed):
 
-openai-whisper
+whisper-ctranslate2
 
 # NOTE:
 # - ffmpeg is required but is NOT a pip package. Install it separately
 #   (Windows: winget install Gyan.FFmpeg | macOS: brew install ffmpeg
 #    Linux: sudo apt install ffmpeg). The bundled setup tool handles this.
-# - For NVIDIA GPU acceleration, replace the default CPU PyTorch with a CUDA
-#   build, e.g.:  pip install torch --index-url https://download.pytorch.org/whl/cu128
-#   (the setup tool can do this automatically when it detects an NVIDIA GPU).
+# - For NVIDIA GPU acceleration, if CUDA isn't auto-detected install:
+#       pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+#   (the setup tool does this automatically when it detects an NVIDIA GPU).
+# - openai-whisper is supported as a fallback engine if you prefer it.

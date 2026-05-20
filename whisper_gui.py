@@ -22,7 +22,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 SETTINGS_FILE = Path.home() / ".whisper_transcriber.json"
 # Matches the end time in Whisper's "[mm:ss.fff --> mm:ss.fff]" verbose output.
 _TS_RE = re.compile(r"-->\s*([0-9:]+\.[0-9]+)\]")
@@ -68,16 +68,23 @@ AUDIO_EXTS = ["*.mp3", "*.wav", "*.m4a", "*.flac", "*.ogg", "*.aac",
               "*.wma", "*.mp4", "*.mkv", "*.mov", "*.avi", "*.webm"]
 
 
+# Engines in preference order. whisper-ctranslate2 (faster-whisper / CTranslate2)
+# is smaller and ~4x faster with the same CLI flags; plain openai-whisper is the
+# fallback. Both auto-detect the GPU (--device defaults to auto).
+ENGINES = ["whisper-ctranslate2", "whisper"]
+
+
 def find_whisper_cmd() -> list[str] | None:
-    exe = shutil.which("whisper")
-    if exe:
-        return [exe]
     bindir = Path(sys.executable).parent
-    name = "whisper.exe" if os.name == "nt" else "whisper"
-    # Windows puts console scripts in Scripts/; Unix puts them in the same bin/.
-    for cand in (bindir / "Scripts" / name, bindir / name):
-        if cand.exists():
-            return [str(cand)]
+    for engine in ENGINES:
+        exe = shutil.which(engine)
+        if exe:
+            return [exe]
+        nm = engine + (".exe" if os.name == "nt" else "")
+        # Windows puts console scripts in Scripts/; Unix in the same bin/.
+        for cand in (bindir / "Scripts" / nm, bindir / nm):
+            if cand.exists():
+                return [str(cand)]
     try:
         import whisper  # noqa: F401
         return [sys.executable, "-m", "whisper"]
@@ -309,12 +316,18 @@ class App:
     def _check_device(self):
         def work():
             cuda, name = False, ""
+            probe = (
+                "cuda=0\nname=''\n"
+                "try:\n import ctranslate2\n cuda=1 if ctranslate2.get_cuda_device_count()>0 else 0\n"
+                "except Exception: pass\n"
+                "try:\n import torch\n"
+                " if torch.cuda.is_available():\n  cuda=1\n  name=torch.cuda.get_device_name(0)\n"
+                "except Exception: pass\n"
+                "print(cuda)\nprint(name)\n"
+            )
             try:
                 r = subprocess.run(
-                    [sys.executable, "-c",
-                     "import torch;"
-                     "print(1 if torch.cuda.is_available() else 0);"
-                     "print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"],
+                    [sys.executable, "-c", probe],
                     capture_output=True, text=True, timeout=40, creationflags=NO_WINDOW,
                 )
                 lines = (r.stdout or "").strip().splitlines()
@@ -322,6 +335,8 @@ class App:
                 name = lines[1].strip() if len(lines) > 1 else ""
             except Exception:
                 pass
+            if cuda and not name:
+                name = "NVIDIA GPU"
             self.root.after(0, self._set_device, cuda, name)
         threading.Thread(target=work, daemon=True).start()
 
@@ -535,7 +550,6 @@ class App:
         self.run_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self.open_btn.configure(state="disabled")
-        self.progress.configure(mode="determinate", value=0)
         self._clear(self.transcript)
         self.notebook.select(0)  # show the Log tab while it runs
         self.status.set("Transcribing… (first run downloads the model)")
@@ -552,16 +566,20 @@ class App:
 
     def _run(self, cmd: list[str], inp: str):
         self._duration = probe_duration(inp)
-        if not self._duration:
-            # Unknown length -> show an indeterminate "working" animation.
-            self.root.after(0, self._start_indeterminate)
+        self._switched = False
+        # Animate immediately; switch to a real % only if the engine emits
+        # segment timestamps (openai-whisper does; faster-whisper shows its own
+        # bar, so we keep the animation going for it).
+        self.root.after(0, self._start_indeterminate)
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
         try:
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, creationflags=NO_WINDOW,
+                text=True, bufsize=1, encoding="utf-8", errors="replace",
+                creationflags=NO_WINDOW, env=env,
             )
         except OSError as e:
-            self.root.after(0, self._done, False, f"Failed to launch whisper: {e}")
+            self.root.after(0, self._done, False, f"Failed to launch: {e}")
             return
         assert self._proc.stdout is not None
         for line in self._proc.stdout:
@@ -570,15 +588,25 @@ class App:
             if self._duration:
                 end = parse_end_seconds(line)
                 if end is not None:
+                    if not self._switched:
+                        self._switched = True
+                        self.root.after(0, self._to_determinate)
                     self.root.after(0, self._set_progress, end / self._duration * 100.0)
         code = self._proc.wait()
         self._proc = None
         ok = code == 0
-        self.root.after(0, self._done, ok, "Done." if ok else f"whisper exited with code {code}")
+        self.root.after(0, self._done, ok, "Done." if ok else f"engine exited with code {code}")
 
     def _start_indeterminate(self):
         self.progress.configure(mode="indeterminate")
         self.progress.start(12)
+
+    def _to_determinate(self):
+        try:
+            self.progress.stop()
+        except tk.TclError:
+            pass
+        self.progress.configure(mode="determinate", value=0)
 
     def cancel(self):
         if self._proc is not None:

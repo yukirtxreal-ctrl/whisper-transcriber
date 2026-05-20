@@ -155,38 +155,27 @@ def check_ffmpeg() -> CheckResult:
         return True, exe
 
 
-def check_whisper() -> CheckResult:
-    try:
-        import whisper
-        ver = getattr(whisper, "__version__", "installed")
-        return True, f"openai-whisper {ver}"
-    except ImportError:
-        return False, "openai-whisper not installed"
-
-
-def check_torch() -> CheckResult:
-    try:
-        import torch
-        cuda = torch.cuda.is_available()
-        dev = "CUDA GPU available" if cuda else "CPU only (slower, still works)"
-        return True, f"torch {torch.__version__} - {dev}"
-    except ImportError:
-        return False, "PyTorch not installed (comes with openai-whisper)"
-
-
-def check_whisper_cli() -> CheckResult:
-    if shutil.which("whisper"):
-        return True, "whisper command on PATH"
+def _engine_cli(name: str) -> bool:
+    if shutil.which(name):
+        return True
     bindir = Path(sys.executable).parent
-    name = "whisper.exe" if IS_WINDOWS else "whisper"
-    for cand in (bindir / "Scripts" / name, bindir / name):
-        if cand.exists():
-            return True, str(cand)
-    try:
-        import whisper  # noqa: F401
-        return True, "module form (python -m whisper)"
-    except ImportError:
-        return False, "whisper CLI not found"
+    nm = name + (".exe" if IS_WINDOWS else "")
+    return (bindir / "Scripts" / nm).exists() or (bindir / nm).exists()
+
+
+def check_engine() -> CheckResult:
+    """The speech engine. Prefer whisper-ctranslate2 (faster-whisper / CTranslate2:
+    smaller, ~4x faster, no PyTorch). Plain openai-whisper also counts."""
+    if _engine_cli("whisper-ctranslate2"):
+        try:
+            import faster_whisper
+            ver = getattr(faster_whisper, "__version__", "")
+        except ImportError:
+            ver = ""
+        return True, f"faster-whisper{(' ' + ver) if ver else ''} (whisper-ctranslate2)"
+    if _engine_cli("whisper"):
+        return True, "openai-whisper (slower fallback engine)"
+    return False, "no speech engine installed"
 
 
 # --- fixes ---
@@ -216,16 +205,12 @@ def fix_ffmpeg(log) -> bool:
     return _stream(["sudo", "apt-get", "install", "-y", "ffmpeg"], log)
 
 
-def fix_whisper(log) -> bool:
-    log("Installing openai-whisper (this also installs PyTorch -- large, be patient)...")
+def fix_engine(log) -> bool:
+    log("Installing whisper-ctranslate2 (faster-whisper backend)...")
+    log("Much smaller than openai-whisper -- no PyTorch download.")
     return _stream(
-        [sys.executable, "-m", "pip", "install", "-U", "openai-whisper"], log
+        [sys.executable, "-m", "pip", "install", "-U", "whisper-ctranslate2"], log
     )
-
-
-# CUDA wheel index. cu128 supports modern NVIDIA GPUs (RTX 20-series .. 50-series
-# / Blackwell). Very old GPUs may need cu121 or cu118 instead.
-NVIDIA_CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
 
 
 def has_nvidia_gpu() -> bool:
@@ -237,39 +222,37 @@ def has_nvidia_gpu() -> bool:
 
 
 def check_gpu() -> CheckResult:
-    """Reports GPU status and, on NVIDIA machines, whether the CUDA PyTorch
-    build is installed (the plain `pip install openai-whisper` pulls CPU torch)."""
+    """GPU status for the faster-whisper (CTranslate2) backend. Falls back to a
+    PyTorch check for the openai-whisper engine."""
     nvidia = has_nvidia_gpu()
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() > 0:
+            return True, "CUDA enabled (CTranslate2)"
+    except Exception:
+        pass
     try:
         import torch
         if torch.cuda.is_available():
             return True, f"CUDA enabled - {torch.cuda.get_device_name(0)}"
-        if nvidia:
-            return False, ("NVIDIA GPU found, but CPU-only PyTorch is installed -- "
-                           "click to install the CUDA build")
-        return True, "no NVIDIA GPU - using CPU (works fine)"
-    except ImportError:
-        if nvidia:
-            return False, "NVIDIA GPU found -- install whisper, then the CUDA build"
-        return True, "no NVIDIA GPU - using CPU (works fine)"
+    except Exception:
+        pass
+    if nvidia:
+        return False, "NVIDIA GPU found, but CUDA libraries are missing -- click to install"
+    return True, "no NVIDIA GPU - using CPU (works fine)"
 
 
-def fix_cuda_torch(log) -> bool:
+def fix_gpu(log) -> bool:
     if not has_nvidia_gpu():
-        log("No NVIDIA GPU detected -- CPU PyTorch is correct here. Nothing to do.")
+        log("No NVIDIA GPU detected -- CPU is correct here. Nothing to do.")
         return True
-    log("NVIDIA GPU detected. Installing the CUDA build of PyTorch (cu128).")
-    log("This replaces the CPU build; large download (~2-3 GB), be patient.")
-    _stream([sys.executable, "-m", "pip", "uninstall", "-y", "torch"], log)
-    ok = _stream(
-        [sys.executable, "-m", "pip", "install", "torch", "--index-url", NVIDIA_CUDA_INDEX],
+    log("NVIDIA GPU detected. Installing CUDA libraries for faster-whisper")
+    log("(cuBLAS + cuDNN for CUDA 12)...")
+    return _stream(
+        [sys.executable, "-m", "pip", "install", "-U",
+         "nvidia-cublas-cu12", "nvidia-cudnn-cu12"],
         log,
     )
-    if ok:
-        log("")
-        log("Installed. If CUDA still isn't available on a very old GPU, try a")
-        log("different index (cu121 or cu118) at download.pytorch.org/whl.")
-    return ok
 
 
 # --- registry ---
@@ -292,15 +275,12 @@ CHECKS: list[Check] = [
     Check("pip", "pip", "Installs Python packages.", check_pip),
     Check("ffmpeg", "ffmpeg", "Decodes audio/video for Whisper.",
           check_ffmpeg, "Install", fix_ffmpeg),
-    Check("whisper", "openai-whisper", "The speech-recognition package.",
-          check_whisper, "Install (pip)", fix_whisper),
-    Check("torch", "PyTorch", "Deep-learning backend (installed with whisper).",
-          check_torch, "Install (pip)", fix_whisper),
-    Check("cli", "whisper command", "CLI the GUI calls to transcribe.",
-          check_whisper_cli, "Install (pip)", fix_whisper),
+    Check("engine", "Speech engine (faster-whisper)",
+          "whisper-ctranslate2 - smaller & ~4x faster than openai-whisper, no PyTorch.",
+          check_engine, "Install (pip)", fix_engine),
     Check("cuda", "GPU acceleration",
           "NVIDIA CUDA makes transcription much faster (optional; CPU works too).",
-          check_gpu, "Install CUDA PyTorch", fix_cuda_torch, required=False),
+          check_gpu, "Install CUDA libs", fix_gpu, required=False),
 ]
 
 
