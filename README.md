@@ -59,6 +59,25 @@ python3 whisper_gui.py       # the app
 - **No GPU / CPU:** works out of the box — and faster-whisper is already several
   times faster than the reference engine on CPU.
 
+## "Windows protected your PC" / "Unknown Publisher" warning
+
+When you run a `.bat` you downloaded from the internet, Windows shows a
+**security warning** ("The publisher could not be verified", *Unknown Publisher*).
+This is **normal and expected** for any unsigned script downloaded from the web —
+it does not mean the file is unsafe. You have two options:
+
+- Click **Run** (and, if you like, untick "Always ask before opening this file").
+- Or clear the "downloaded from the internet" flag for the whole folder once —
+  in PowerShell:
+  ```powershell
+  Get-ChildItem "<path to Whisper Transcriber folder>" -Recurse | Unblock-File
+  ```
+  (or right-click a file → Properties → tick **Unblock** → OK).
+
+If SmartScreen shows a blue "Windows protected your PC" box, click
+**More info → Run anyway**. Removing the warning entirely requires a paid
+code-signing certificate, which this free project doesn't use.
+
 ## Project structure
 
 | File | Purpose |
