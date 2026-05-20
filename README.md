@@ -1,6 +1,11 @@
 # Whisper Transcriber
 
-A simple, black-and-minimalist desktop GUI for OpenAI Whisper — pick an audio or video file, choose a model, and get a transcript. Cross-platform (Windows, macOS, Linux), with a built-in dependency installer and automatic GPU acceleration when available.
+A black-and-minimalist desktop audio toolkit:
+
+- **Transcribe** — pick an audio/video file and get a transcript (OpenAI Whisper / faster-whisper).
+- **Generate** — type a prompt and create music or sound effects (Stable Audio 3).
+
+Cross-platform (Windows, macOS, Linux), with a built-in dependency installer and automatic GPU acceleration when available.
 
 > Built with Python + Tkinter (standard library only). It uses **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** (via the `whisper-ctranslate2` CLI) — smaller and ~4× faster than the reference implementation, with no PyTorch dependency — and falls back to [openai-whisper](https://github.com/openai/whisper) if that's what's installed.
 
@@ -16,6 +21,7 @@ A simple, black-and-minimalist desktop GUI for OpenAI Whisper — pick an audio 
 - Cancel button and one-click "Open output folder"
 - **GPU acceleration** (NVIDIA CUDA) used automatically when available; CPU fallback otherwise
 - **Dependency installer GUI** that checks/installs ffmpeg, openai-whisper, and PyTorch — and **auto-detects an NVIDIA GPU** to install the matching CUDA build
+- **Generate tab** — text-to-audio with [Stable Audio 3](https://huggingface.co/collections/stabilityai/stable-audio-3) (music / SFX)
 - Dark, minimalist UI with a single accent color
 
 ## Requirements
@@ -78,6 +84,28 @@ If SmartScreen shows a blue "Windows protected your PC" box, click
 **More info → Run anyway**. Removing the warning entirely requires a paid
 code-signing certificate, which this free project doesn't use.
 
+## Generate audio (Stable Audio 3)
+
+The **Generate** tab turns a text prompt into a `.wav` using
+[Stable Audio 3](https://huggingface.co/collections/stabilityai/stable-audio-3)
+(text-to-audio — music and sound effects).
+
+One-time setup:
+1. In the setup tool, install **Stable Audio (generation)** — or:
+   `pip install stable-audio-tools einops torchaudio`
+2. The models are **gated**. On the model page
+   (e.g. `stabilityai/stable-audio-3-medium`), sign in and **accept the
+   Stability AI Community License**, then authorize your machine:
+   `huggingface-cli login` (paste a token from huggingface.co/settings/tokens).
+3. Open the **Generate** tab, type a prompt (e.g. *"lo-fi hip hop beat, 80 BPM"*),
+   pick a model + length, and click **Generate**. The first run downloads the model.
+
+Notes:
+- A GPU is strongly recommended (the 2B `medium` model is slow on CPU).
+- The Stability AI Community License is free for non-commercial / small use;
+  commercial use above their threshold needs a separate license. The model
+  weights are not redistributed by this project.
+
 ## Storage & OneDrive
 
 - **Model files download once** the first time you use each model — to
@@ -93,7 +121,8 @@ code-signing certificate, which this free project doesn't use.
 
 | File | Purpose |
 |---|---|
-| `whisper_gui.py` | The transcription GUI |
+| `whisper_gui.py` | The GUI (Transcribe + Generate tabs) |
+| `generate_worker.py` | Stable Audio 3 text-to-audio worker (called by the Generate tab) |
 | `setup_whisper.py` | Dependency checker / installer GUI |
 | `Whisper Transcriber.bat` / `.command` | App launchers (Windows / macOS-Linux) |
 | `Install Dependencies.bat` / `.command` | Setup launchers |

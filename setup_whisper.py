@@ -255,6 +255,25 @@ def fix_gpu(log) -> bool:
     )
 
 
+def check_stable_audio() -> CheckResult:
+    try:
+        import stable_audio_tools  # noqa: F401
+        return True, "stable-audio-tools installed (Generate tab)"
+    except ImportError:
+        return False, "not installed - only needed for the Generate (text->audio) tab"
+
+
+def fix_stable_audio(log) -> bool:
+    log("Installing stable-audio-tools + einops for the Generate tab (large)...")
+    log("Models are GATED: accept the license on the Hugging Face model page and")
+    log("run `huggingface-cli login` once before generating.")
+    return _stream(
+        [sys.executable, "-m", "pip", "install", "-U",
+         "stable-audio-tools", "einops", "torchaudio"],
+        log,
+    )
+
+
 # --- registry ---
 
 @dataclass
@@ -281,6 +300,9 @@ CHECKS: list[Check] = [
     Check("cuda", "GPU acceleration",
           "NVIDIA CUDA makes transcription much faster (optional; CPU works too).",
           check_gpu, "Install CUDA libs", fix_gpu, required=False),
+    Check("stableaudio", "Stable Audio (generation)",
+          "Optional: text->audio for the Generate tab. Gated model; needs HF login.",
+          check_stable_audio, "Install (pip)", fix_stable_audio, required=False),
 ]
 
 

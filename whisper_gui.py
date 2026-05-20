@@ -22,8 +22,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 SETTINGS_FILE = Path.home() / ".whisper_transcriber.json"
+GEN_WORKER = Path(__file__).resolve().parent / "generate_worker.py"
 # Matches the end time in Whisper's "[mm:ss.fff --> mm:ss.fff]" verbose output.
 _TS_RE = re.compile(r"-->\s*([0-9:]+\.[0-9]+)\]")
 
@@ -66,6 +67,13 @@ LANGUAGES = [
 FORMATS = ["txt", "srt", "vtt", "tsv", "json", "all"]
 AUDIO_EXTS = ["*.mp3", "*.wav", "*.m4a", "*.flac", "*.ogg", "*.aac",
               "*.wma", "*.mp4", "*.mkv", "*.mov", "*.avi", "*.webm"]
+
+# Stable Audio 3 models (text -> audio generation). Gated on Hugging Face.
+SA_MODELS = [
+    ("stabilityai/stable-audio-3-medium", "medium  (2B · music + sfx)"),
+    ("stabilityai/stable-audio-3-small-music", "small-music  (0.6B)"),
+    ("stabilityai/stable-audio-3-small-sfx", "small-sfx  (0.6B)"),
+]
 
 
 # Engines in preference order. whisper-ctranslate2 (faster-whisper / CTranslate2)
@@ -300,6 +308,16 @@ class App:
         self._last_output_file: Path | None = None
         self._duration: float | None = None
 
+        # Generation (Stable Audio) state
+        self.gen_model = tk.StringVar(value=s.get("gen_model", SA_MODELS[0][1]))
+        self.gen_duration = tk.IntVar(value=s.get("gen_duration", 30))
+        self.gen_steps = tk.IntVar(value=s.get("gen_steps", 8))
+        self.gen_output = tk.StringVar()
+        self.gen_status = tk.StringVar(value="Describe the audio you want, then Generate.")
+        self._gen_busy = False
+        self._gen_proc: subprocess.Popen | None = None
+        self._gen_output_file: Path | None = None
+
         self._build()
         self._check_device()
 
@@ -311,6 +329,9 @@ class App:
             "fmt": self.fmt.get(),
             "last_input_dir": self._last_input_dir,
             "last_output_dir": self.output_dir.get().strip(),
+            "gen_model": self.gen_model.get(),
+            "gen_duration": int(self.gen_duration.get() or 30),
+            "gen_steps": int(self.gen_steps.get() or 8),
         })
 
     def _check_device(self):
@@ -349,22 +370,31 @@ class App:
             self.device_lbl.configure(foreground=MUTED)
 
     def _build(self):
-        outer = ttk.Frame(self.root, padding=(36, 30, 36, 24))
+        outer = ttk.Frame(self.root, padding=(28, 22, 28, 16))
         outer.pack(fill=tk.BOTH, expand=True)
 
-        # Header
-        ttk.Label(outer, text="AUDIO  →  TEXT", style="Kicker.TLabel").pack(anchor=tk.W)
+        # Shared header
+        ttk.Label(outer, text="AUDIO  ·  TRANSCRIBE + GENERATE", style="Kicker.TLabel").pack(anchor=tk.W)
         ttk.Label(outer, text="Whisper Transcriber", style="Title.TLabel").pack(
             anchor=tk.W, pady=(2, 0))
-        ttk.Label(outer, text="Offline speech-to-text, powered by OpenAI Whisper.",
+        ttk.Label(outer, text="Transcribe speech to text, or generate audio from a text prompt.",
                   style="Muted.TLabel").pack(anchor=tk.W, pady=(3, 0))
-        # device (GPU/CPU) indicator
         self.device_var = tk.StringVar(value="checking compute device…")
         self.device_lbl = ttk.Label(outer, textvariable=self.device_var, style="Muted.TLabel")
         self.device_lbl.pack(anchor=tk.W, pady=(6, 0))
-        # thin accent rule
-        tk.Frame(outer, bg=ACCENT, height=2, width=46).pack(anchor=tk.W, pady=(12, 20))
+        tk.Frame(outer, bg=ACCENT, height=2, width=46).pack(anchor=tk.W, pady=(12, 14))
 
+        # Main tabs
+        main = ttk.Notebook(outer)
+        main.pack(fill=tk.BOTH, expand=True)
+        t_tab = ttk.Frame(main, padding=(2, 12, 2, 2))
+        g_tab = ttk.Frame(main, padding=(2, 12, 2, 2))
+        main.add(t_tab, text="TRANSCRIBE")
+        main.add(g_tab, text="GENERATE")
+        self._build_transcribe(t_tab)
+        self._build_generate(g_tab)
+
+    def _build_transcribe(self, outer):
         # Input
         ttk.Label(outer, text="INPUT FILE", style="Section.TLabel").pack(anchor=tk.W)
         r = ttk.Frame(outer)
@@ -431,6 +461,199 @@ class App:
         self.open_btn = ttk.Button(foot, text="Open output folder",
                                    command=self._open_output, state="disabled")
         self.open_btn.pack(side=tk.LEFT)
+
+    # --- Generate (Stable Audio 3) tab ---
+
+    def _build_generate(self, outer):
+        ttk.Label(outer, text="PROMPT", style="Section.TLabel").pack(anchor=tk.W)
+        pw = ttk.Frame(outer)
+        pw.pack(fill=tk.X, pady=(4, 14))
+        self.gen_prompt = tk.Text(
+            pw, height=3, wrap=tk.WORD, relief="flat", borderwidth=0,
+            bg=FIELD, fg=TEXT, insertbackground=ACCENT, font=(UI_FAMILY, 10),
+            padx=8, pady=7, highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=ACCENT,
+        )
+        self.gen_prompt.pack(fill=tk.X)
+        self.gen_prompt.insert("1.0", "Lo-fi hip hop beat, mellow piano, 80 BPM")
+
+        # Options
+        opts = ttk.Frame(outer)
+        opts.pack(fill=tk.X, pady=(0, 6))
+        opts.columnconfigure(0, weight=3, uniform="g")
+        opts.columnconfigure(1, weight=1, uniform="g")
+        opts.columnconfigure(2, weight=1, uniform="g")
+
+        c0 = ttk.Frame(opts); c0.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        ttk.Label(c0, text="MODEL", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        ttk.Combobox(c0, textvariable=self.gen_model, state="readonly",
+                     values=[lbl for _, lbl in SA_MODELS]).pack(fill=tk.X, ipady=2)
+
+        c1 = ttk.Frame(opts); c1.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        ttk.Label(c1, text="SECONDS", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        ttk.Spinbox(c1, from_=1, to=180, textvariable=self.gen_duration).pack(fill=tk.X, ipady=2)
+
+        c2 = ttk.Frame(opts); c2.grid(row=0, column=2, sticky="ew")
+        ttk.Label(c2, text="STEPS", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        ttk.Spinbox(c2, from_=4, to=100, textvariable=self.gen_steps).pack(fill=tk.X, ipady=2)
+
+        # Output file
+        ttk.Label(outer, text="OUTPUT WAV", style="Section.TLabel").pack(anchor=tk.W, pady=(12, 0))
+        ow = ttk.Frame(outer)
+        ow.pack(fill=tk.X, pady=(4, 14))
+        ttk.Entry(ow, textvariable=self.gen_output).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        ttk.Button(ow, text="Save as", command=self.pick_gen_output).pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Label(
+            outer,
+            text="Stable Audio 3 is gated: accept its license on Hugging Face and run "
+                 "`huggingface-cli login` once. First run downloads the model.",
+            style="Muted.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 14))
+
+        # Actions
+        act = ttk.Frame(outer)
+        act.pack(fill=tk.X)
+        self.gen_run_btn = ttk.Button(act, text="Generate", style="Accent.TButton",
+                                      command=self.generate)
+        self.gen_run_btn.pack(side=tk.LEFT)
+        self.gen_cancel_btn = ttk.Button(act, text="Cancel", command=self.cancel_generate,
+                                         state="disabled")
+        self.gen_cancel_btn.pack(side=tk.LEFT, padx=(10, 14))
+        ttk.Label(act, textvariable=self.gen_status, style="Status.TLabel").pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.gen_progress = ttk.Progressbar(outer, style="Accent.Horizontal.TProgressbar",
+                                            mode="determinate", maximum=100)
+        self.gen_progress.pack(fill=tk.X, pady=(12, 0))
+
+        ttk.Separator(outer).pack(fill=tk.X, pady=14)
+        ttk.Label(outer, text="OUTPUT LOG", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        self.gen_log, log_wrap = self._make_text_panel(outer)
+        log_wrap.pack(fill=tk.BOTH, expand=True)
+
+        foot = ttk.Frame(outer)
+        foot.pack(fill=tk.X, pady=(12, 0))
+        self.gen_play_btn = ttk.Button(foot, text="Play / open file",
+                                       command=self._open_gen_file, state="disabled")
+        self.gen_play_btn.pack(side=tk.LEFT)
+
+    def pick_gen_output(self):
+        path = filedialog.asksaveasfilename(
+            title="Save generated audio as", defaultextension=".wav",
+            filetypes=[("WAV audio", "*.wav")],
+            initialdir=self._last_input_dir or None,
+            initialfile="generated.wav",
+        )
+        if path:
+            self.gen_output.set(path)
+
+    def _open_gen_file(self):
+        if self._gen_output_file and self._gen_output_file.exists():
+            try:
+                if sys.platform == "win32":
+                    os.startfile(str(self._gen_output_file))  # noqa: S606
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", str(self._gen_output_file)], check=False)
+                else:
+                    subprocess.run(["xdg-open", str(self._gen_output_file)], check=False)
+            except OSError:
+                pass
+
+    def _gen_log(self, text: str):
+        self.root.after(0, self._gen_append, text)
+
+    def _gen_append(self, text: str):
+        self.gen_log.configure(state="normal")
+        self.gen_log.insert(tk.END, text + "\n")
+        self.gen_log.see(tk.END)
+        self.gen_log.configure(state="disabled")
+
+    def generate(self):
+        if self._gen_busy:
+            return
+        prompt = self.gen_prompt.get("1.0", tk.END).strip()
+        if not prompt:
+            messagebox.showwarning("Whisper Transcriber", "Enter a prompt first.")
+            return
+        if not GEN_WORKER.exists():
+            messagebox.showerror("Whisper Transcriber", f"Missing worker:\n{GEN_WORKER}")
+            return
+        out = self.gen_output.get().strip()
+        if not out:
+            out = str((Path(self._last_input_dir) if self._last_input_dir else Path.home())
+                      / "generated.wav")
+            self.gen_output.set(out)
+        try:
+            os.makedirs(Path(out).parent, exist_ok=True)
+        except OSError:
+            pass
+        model_id = next((mid for mid, lbl in SA_MODELS if lbl == self.gen_model.get()),
+                        SA_MODELS[0][0])
+        try:
+            duration = max(1, int(self.gen_duration.get()))
+            steps = max(1, int(self.gen_steps.get()))
+        except (tk.TclError, ValueError):
+            messagebox.showerror("Whisper Transcriber", "Seconds and Steps must be numbers.")
+            return
+
+        cmd = [sys.executable, str(GEN_WORKER),
+               "--prompt", prompt, "--model", model_id,
+               "--duration", str(duration), "--steps", str(steps),
+               "--output", out]
+        self._gen_output_file = Path(out)
+        self._persist()
+        self._gen_busy = True
+        self.gen_run_btn.configure(state="disabled")
+        self.gen_cancel_btn.configure(state="normal")
+        self.gen_play_btn.configure(state="disabled")
+        self.gen_progress.configure(mode="indeterminate")
+        self.gen_progress.start(12)
+        self.gen_status.set("Generating… (first run downloads the model)")
+        self._gen_append(f"$ {' '.join(cmd[:1])} generate_worker.py --prompt {prompt!r} "
+                         f"--model {model_id} --duration {duration} --steps {steps}")
+        threading.Thread(target=self._run_generate, args=(cmd,), daemon=True).start()
+
+    def _run_generate(self, cmd: list[str]):
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        try:
+            self._gen_proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, encoding="utf-8", errors="replace",
+                creationflags=NO_WINDOW, env=env,
+            )
+        except OSError as e:
+            self.root.after(0, self._gen_done, False, f"Failed to launch: {e}")
+            return
+        assert self._gen_proc.stdout is not None
+        for line in self._gen_proc.stdout:
+            self._gen_log(line.rstrip())
+        code = self._gen_proc.wait()
+        self._gen_proc = None
+        ok = code == 0
+        self.root.after(0, self._gen_done, ok,
+                        "Done." if ok else f"generation exited with code {code}")
+
+    def cancel_generate(self):
+        if self._gen_proc is not None:
+            try:
+                self._gen_proc.terminate()
+                self._gen_log("\n[cancelled]")
+            except OSError:
+                pass
+
+    def _gen_done(self, ok: bool, msg: str):
+        self._gen_busy = False
+        self.gen_run_btn.configure(state="normal")
+        self.gen_cancel_btn.configure(state="disabled")
+        try:
+            self.gen_progress.stop()
+        except tk.TclError:
+            pass
+        self.gen_progress.configure(mode="determinate", value=100 if ok else 0)
+        self.gen_status.set(msg)
+        if ok and self._gen_output_file and self._gen_output_file.exists():
+            self.gen_play_btn.configure(state="normal")
 
     def _make_text_panel(self, parent):
         wrap = ttk.Frame(parent)
