@@ -223,6 +223,55 @@ def fix_whisper(log) -> bool:
     )
 
 
+# CUDA wheel index. cu128 supports modern NVIDIA GPUs (RTX 20-series .. 50-series
+# / Blackwell). Very old GPUs may need cu121 or cu118 instead.
+NVIDIA_CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
+
+
+def has_nvidia_gpu() -> bool:
+    if shutil.which("nvidia-smi"):
+        return True
+    if IS_WINDOWS and os.path.exists(r"C:\Windows\System32\nvidia-smi.exe"):
+        return True
+    return False
+
+
+def check_gpu() -> CheckResult:
+    """Reports GPU status and, on NVIDIA machines, whether the CUDA PyTorch
+    build is installed (the plain `pip install openai-whisper` pulls CPU torch)."""
+    nvidia = has_nvidia_gpu()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return True, f"CUDA enabled - {torch.cuda.get_device_name(0)}"
+        if nvidia:
+            return False, ("NVIDIA GPU found, but CPU-only PyTorch is installed -- "
+                           "click to install the CUDA build")
+        return True, "no NVIDIA GPU - using CPU (works fine)"
+    except ImportError:
+        if nvidia:
+            return False, "NVIDIA GPU found -- install whisper, then the CUDA build"
+        return True, "no NVIDIA GPU - using CPU (works fine)"
+
+
+def fix_cuda_torch(log) -> bool:
+    if not has_nvidia_gpu():
+        log("No NVIDIA GPU detected -- CPU PyTorch is correct here. Nothing to do.")
+        return True
+    log("NVIDIA GPU detected. Installing the CUDA build of PyTorch (cu128).")
+    log("This replaces the CPU build; large download (~2-3 GB), be patient.")
+    _stream([sys.executable, "-m", "pip", "uninstall", "-y", "torch"], log)
+    ok = _stream(
+        [sys.executable, "-m", "pip", "install", "torch", "--index-url", NVIDIA_CUDA_INDEX],
+        log,
+    )
+    if ok:
+        log("")
+        log("Installed. If CUDA still isn't available on a very old GPU, try a")
+        log("different index (cu121 or cu118) at download.pytorch.org/whl.")
+    return ok
+
+
 # --- registry ---
 
 @dataclass
@@ -249,8 +298,9 @@ CHECKS: list[Check] = [
           check_torch, "Install (pip)", fix_whisper),
     Check("cli", "whisper command", "CLI the GUI calls to transcribe.",
           check_whisper_cli, "Install (pip)", fix_whisper),
-    Check("cuda", "GPU acceleration", "Optional: a CUDA GPU makes transcription much faster.",
-          check_torch, required=False),
+    Check("cuda", "GPU acceleration",
+          "NVIDIA CUDA makes transcription much faster (optional; CPU works too).",
+          check_gpu, "Install CUDA PyTorch", fix_cuda_torch, required=False),
 ]
 
 

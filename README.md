@@ -10,9 +10,12 @@ A simple, black-and-minimalist desktop GUI for [OpenAI Whisper](https://github.c
 - Model picker: `tiny` → `large`, plus `turbo`
 - Language auto-detect or manual selection
 - Output formats: txt, srt, vtt, tsv, json (or all)
-- Live progress log, Cancel button, one-click "Open output folder"
+- **Progress bar** (with ETA from the media duration) plus a live log
+- **Transcript preview** tab — read the result in-app without opening the file
+- Remembers your last model / language / folders between runs
+- Cancel button and one-click "Open output folder"
 - **GPU acceleration** (NVIDIA CUDA) used automatically when available; CPU fallback otherwise
-- **Dependency installer GUI** that checks/installs ffmpeg, openai-whisper, and PyTorch
+- **Dependency installer GUI** that checks/installs ffmpeg, openai-whisper, and PyTorch — and **auto-detects an NVIDIA GPU** to install the matching CUDA build
 - Dark, minimalist UI with a single accent color
 
 ## Requirements

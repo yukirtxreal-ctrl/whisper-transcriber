@@ -11,7 +11,9 @@ Run:  py -3 whisper_gui.py   (or double-click "Whisper Transcriber.bat")
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +21,11 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+
+__version__ = "1.1.0"
+SETTINGS_FILE = Path.home() / ".whisper_transcriber.json"
+# Matches the end time in Whisper's "[mm:ss.fff --> mm:ss.fff]" verbose output.
+_TS_RE = re.compile(r"-->\s*([0-9:]+\.[0-9]+)\]")
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -135,6 +142,50 @@ def ffmpeg_present() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(data: dict) -> None:
+    try:
+        SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def probe_duration(path: str) -> float | None:
+    """Total media length in seconds via ffprobe, or None if unavailable."""
+    ff = shutil.which("ffprobe")
+    if not ff:
+        return None
+    try:
+        r = subprocess.run(
+            [ff, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
+        )
+        return float(r.stdout.strip())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def parse_end_seconds(line: str) -> float | None:
+    """Extract the segment end time (seconds) from a Whisper verbose line."""
+    m = _TS_RE.search(line)
+    if not m:
+        return None
+    sec = 0.0
+    try:
+        for part in m.group(1).split(":"):
+            sec = sec * 60 + float(part)
+    except ValueError:
+        return None
+    return sec
+
+
 def apply_theme(root: tk.Tk) -> None:
     root.configure(bg=BG)
     st = ttk.Style(root)
@@ -197,6 +248,19 @@ def apply_theme(root: tk.Tk) -> None:
                  bordercolor=BG, arrowcolor=MUTED, relief="flat", width=12)
     st.map("Vertical.TScrollbar", background=[("active", "#333333")])
 
+    # Notebook (Log / Transcript tabs)
+    st.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+    st.configure("TNotebook.Tab", background=BG, foreground=MUTED,
+                 padding=(14, 7), borderwidth=0, font=(UI_FAMILY, 9, "bold"))
+    st.map("TNotebook.Tab",
+           background=[("selected", BG)],
+           foreground=[("selected", ACCENT), ("active", TEXT)])
+
+    # Progress bar
+    st.configure("Accent.Horizontal.TProgressbar", troughcolor=FIELD,
+                 background=ACCENT, bordercolor=BORDER, lightcolor=ACCENT,
+                 darkcolor=ACCENT, thickness=6)
+
     # Combobox popup list
     root.option_add("*TCombobox*Listbox.background", FIELD)
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
@@ -213,20 +277,34 @@ class App:
         root.geometry("900x700")
         root.minsize(760, 600)
 
+        s = load_settings()
         self.input_path = tk.StringVar()
         self.output_dir = tk.StringVar()
-        self.model = tk.StringVar(value="base")
-        self.language = tk.StringVar(value="Auto-detect")
-        self.task = tk.StringVar(value="transcribe")
-        self.fmt = tk.StringVar(value="txt")
+        self.model = tk.StringVar(value=s.get("model", "base"))
+        self.language = tk.StringVar(value=s.get("language", "Auto-detect"))
+        self.task = tk.StringVar(value=s.get("task", "transcribe"))
+        self.fmt = tk.StringVar(value=s.get("fmt", "txt"))
         self.status = tk.StringVar(value="Pick an audio or video file to begin.")
+        self._last_input_dir = s.get("last_input_dir", "")
 
         self._busy = False
         self._proc: subprocess.Popen | None = None
         self._last_out_dir: Path | None = None
+        self._last_output_file: Path | None = None
+        self._duration: float | None = None
 
         self._build()
         self._check_device()
+
+    def _persist(self):
+        save_settings({
+            "model": self.model.get(),
+            "language": self.language.get(),
+            "task": self.task.get(),
+            "fmt": self.fmt.get(),
+            "last_input_dir": self._last_input_dir,
+            "last_output_dir": self.output_dir.get().strip(),
+        })
 
     def _check_device(self):
         def work():
@@ -316,23 +394,21 @@ class App:
         ttk.Label(act, textvariable=self.status, style="Status.TLabel").pack(
             side=tk.LEFT, fill=tk.X, expand=True)
 
-        ttk.Separator(outer).pack(fill=tk.X, pady=16)
+        # Progress bar
+        self.progress = ttk.Progressbar(outer, style="Accent.Horizontal.TProgressbar",
+                                        mode="determinate", maximum=100)
+        self.progress.pack(fill=tk.X, pady=(12, 0))
 
-        # Log
-        ttk.Label(outer, text="OUTPUT LOG", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
-        logwrap = ttk.Frame(outer)
-        logwrap.pack(fill=tk.BOTH, expand=True)
-        self.log = tk.Text(
-            logwrap, height=14, wrap=tk.WORD, relief="flat", borderwidth=0,
-            bg=PANEL, fg="#c8c8c8", insertbackground=TEXT,
-            font=(MONO_FAMILY, 10), padx=12, pady=10, state="disabled",
-            highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER,
-        )
-        self.log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb = ttk.Scrollbar(logwrap, orient=tk.VERTICAL, command=self.log.yview,
-                           style="Vertical.TScrollbar")
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log.configure(yscrollcommand=sb.set)
+        ttk.Separator(outer).pack(fill=tk.X, pady=14)
+
+        # Log / Transcript tabs
+        nb = ttk.Notebook(outer)
+        nb.pack(fill=tk.BOTH, expand=True)
+        self.notebook = nb
+        self.log, log_tab = self._make_text_panel(nb)
+        self.transcript, tr_tab = self._make_text_panel(nb)
+        nb.add(log_tab, text="LOG")
+        nb.add(tr_tab, text="TRANSCRIPT")
 
         # Footer
         foot = ttk.Frame(outer)
@@ -340,6 +416,21 @@ class App:
         self.open_btn = ttk.Button(foot, text="Open output folder",
                                    command=self._open_output, state="disabled")
         self.open_btn.pack(side=tk.LEFT)
+
+    def _make_text_panel(self, parent):
+        wrap = ttk.Frame(parent)
+        txt = tk.Text(
+            wrap, height=13, wrap=tk.WORD, relief="flat", borderwidth=0,
+            bg=PANEL, fg="#c8c8c8", insertbackground=TEXT,
+            font=(MONO_FAMILY, 10), padx=12, pady=10, state="disabled",
+            highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER,
+        )
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb = ttk.Scrollbar(wrap, orient=tk.VERTICAL, command=txt.yview,
+                           style="Vertical.TScrollbar")
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.configure(yscrollcommand=sb.set)
+        return txt, wrap
 
     def _opt(self, parent, col, label, var, values):
         cell = ttk.Frame(parent)
@@ -354,15 +445,20 @@ class App:
         path = filedialog.askopenfilename(
             title="Pick audio or video file",
             filetypes=[("Audio/Video", " ".join(AUDIO_EXTS)), ("All files", "*.*")],
+            initialdir=self._last_input_dir or None,
         )
         if not path:
             return
         self.input_path.set(path)
+        self._last_input_dir = str(Path(path).parent)
         if not self.output_dir.get():
             self.output_dir.set(str(Path(path).parent))
 
     def pick_output(self):
-        path = filedialog.askdirectory(title="Pick output folder")
+        path = filedialog.askdirectory(
+            title="Pick output folder",
+            initialdir=self.output_dir.get() or self._last_input_dir or None,
+        )
         if path:
             self.output_dir.set(path)
 
@@ -433,15 +529,32 @@ class App:
             cmd += ["--language", lang]
 
         self._last_out_dir = Path(out_dir)
+        self._last_output_file = Path(out_dir) / (Path(inp).stem + ".txt")
+        self._persist()
         self._busy = True
         self.run_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self.open_btn.configure(state="disabled")
+        self.progress.configure(mode="determinate", value=0)
+        self._clear(self.transcript)
+        self.notebook.select(0)  # show the Log tab while it runs
         self.status.set("Transcribing… (first run downloads the model)")
         self._append(f"$ {' '.join(cmd)}\n")
-        threading.Thread(target=self._run, args=(cmd,), daemon=True).start()
+        threading.Thread(target=self._run, args=(cmd, inp), daemon=True).start()
 
-    def _run(self, cmd: list[str]):
+    def _clear(self, widget: tk.Text):
+        widget.configure(state="normal")
+        widget.delete("1.0", tk.END)
+        widget.configure(state="disabled")
+
+    def _set_progress(self, pct: float):
+        self.progress.configure(value=max(0.0, min(100.0, pct)))
+
+    def _run(self, cmd: list[str], inp: str):
+        self._duration = probe_duration(inp)
+        if not self._duration:
+            # Unknown length -> show an indeterminate "working" animation.
+            self.root.after(0, self._start_indeterminate)
         try:
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -452,11 +565,20 @@ class App:
             return
         assert self._proc.stdout is not None
         for line in self._proc.stdout:
-            self.log_line(line.rstrip())
+            line = line.rstrip()
+            self.log_line(line)
+            if self._duration:
+                end = parse_end_seconds(line)
+                if end is not None:
+                    self.root.after(0, self._set_progress, end / self._duration * 100.0)
         code = self._proc.wait()
         self._proc = None
         ok = code == 0
         self.root.after(0, self._done, ok, "Done." if ok else f"whisper exited with code {code}")
+
+    def _start_indeterminate(self):
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
 
     def cancel(self):
         if self._proc is not None:
@@ -470,9 +592,41 @@ class App:
         self._busy = False
         self.run_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
+        # finalize progress bar
+        if str(self.progress["mode"]) == "indeterminate":
+            self.progress.stop()
+            self.progress.configure(mode="determinate")
+        self.progress.configure(value=100 if ok else 0)
         self.status.set(msg)
         if ok and self._last_out_dir and self._last_out_dir.exists():
             self.open_btn.configure(state="normal")
+            self._load_transcript()
+
+    def _load_transcript(self):
+        """Show the produced transcript in the Transcript tab and switch to it."""
+        path = self._last_output_file
+        text = None
+        if path and path.exists():
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = None
+        if text is None and self._last_out_dir and self._last_output_file:
+            # Fallback: any sibling file with the same stem (srt/vtt/json…).
+            for alt in sorted(self._last_out_dir.glob(self._last_output_file.stem + ".*")):
+                if alt.suffix.lower() != ".txt":
+                    try:
+                        text = alt.read_text(encoding="utf-8", errors="replace")
+                        break
+                    except OSError:
+                        continue
+        if not text:
+            return
+        self.transcript.configure(state="normal")
+        self.transcript.delete("1.0", tk.END)
+        self.transcript.insert(tk.END, text)
+        self.transcript.configure(state="disabled")
+        self.notebook.select(1)  # switch to the Transcript tab
 
 
 def main():
