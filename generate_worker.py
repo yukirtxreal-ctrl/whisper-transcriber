@@ -45,17 +45,18 @@ def main() -> int:
         log("Install with:  pip install stable-audio-tools torchaudio einops")
         return 1
 
-    # Stable Audio 3 documents the inpaint generator; fall back to the plain
-    # conditional generator if that entry point isn't present.
+    # Plain conditional generation is the canonical text-to-audio path; the
+    # inpaint variant is for continuing/filling existing audio. Prefer cond,
+    # fall back to inpaint only if cond isn't present.
     gen = None
     try:
         from stable_audio_tools.inference.generation import (
-            generate_diffusion_cond_inpaint as gen,
+            generate_diffusion_cond as gen,
         )
     except Exception:
         try:
             from stable_audio_tools.inference.generation import (
-                generate_diffusion_cond as gen,
+                generate_diffusion_cond_inpaint as gen,
             )
         except Exception as e:
             log(f"ERROR: no generation function available: {e}")
@@ -77,9 +78,6 @@ def main() -> int:
     sample_size = config["sample_size"]
     model = model.to(device)
 
-    if a.seed is not None and a.seed >= 0:
-        torch.manual_seed(a.seed)
-
     log(f"Generating ~{a.duration:.0f}s of audio for: {a.prompt!r} …")
     conditioning = [{"prompt": a.prompt, "seconds_total": float(a.duration)}]
     try:
@@ -89,6 +87,7 @@ def main() -> int:
             cfg_scale=a.cfg,
             conditioning=conditioning,
             sample_size=sample_size,
+            seed=a.seed,          # -1 = random
             device=device,
         )
     except Exception as e:

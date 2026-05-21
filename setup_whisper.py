@@ -263,6 +263,29 @@ def check_stable_audio() -> CheckResult:
         return False, "not installed - only needed for the Generate (text->audio) tab"
 
 
+def check_hf_login() -> CheckResult:
+    try:
+        from huggingface_hub import get_token
+        if get_token():
+            return True, "logged in (token found)"
+        return False, "not logged in - needed to download gated Stable Audio models"
+    except ImportError:
+        return False, "huggingface_hub not installed (comes with the engine)"
+
+
+def fix_hf_login(log) -> bool:
+    log("Hugging Face login is interactive. In a terminal, run:")
+    log("    huggingface-cli login")
+    log("and paste a token (read access) from:")
+    log("    https://huggingface.co/settings/tokens")
+    log("Also accept the model license on its page, e.g.:")
+    log("    https://huggingface.co/stabilityai/stable-audio-3-medium")
+    log("Then come back and click Recheck.")
+    import webbrowser as _wb
+    _wb.open("https://huggingface.co/settings/tokens")
+    return False  # user completes login in a terminal
+
+
 def fix_stable_audio(log) -> bool:
     log("Installing stable-audio-tools + einops for the Generate tab (large)...")
     log("Models are GATED: accept the license on the Hugging Face model page and")
@@ -303,6 +326,9 @@ CHECKS: list[Check] = [
     Check("stableaudio", "Stable Audio (generation)",
           "Optional: text->audio for the Generate tab. Gated model; needs HF login.",
           check_stable_audio, "Install (pip)", fix_stable_audio, required=False),
+    Check("hflogin", "Hugging Face login (for Generate)",
+          "Needed to download gated Stable Audio models. Run `huggingface-cli login`.",
+          check_hf_login, "How to log in", fix_hf_login, required=False),
 ]
 
 
