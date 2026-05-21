@@ -127,6 +127,18 @@ Notes:
 | `Whisper Transcriber.bat` / `.command` | App launchers (Windows / macOS-Linux) |
 | `Install Dependencies.bat` / `.command` | Setup launchers |
 
+## Cost & privacy
+
+**100% free and local — no paid services, no API keys, no subscriptions.** Everything
+runs offline on your own machine; nothing is uploaded to a cloud service. The only
+"costs" are your own electricity, GPU time, and disk space for the downloaded models.
+
+- **Whisper / faster-whisper** (Transcribe): free and open-source, no restrictions.
+- **Stable Audio 3** (Generate): free to download and run; a free Hugging Face account
+  is needed only to fetch the gated weights. The Stability AI Community License allows
+  free non-commercial / small-business use — large-scale **commercial** use of the
+  model needs a separate license from Stability (a licensing term, not a usage fee).
+
 ## Credits
 
 Speech recognition by [OpenAI Whisper](https://github.com/openai/whisper) (MIT). This project is an independent GUI wrapper and is not affiliated with OpenAI.
