@@ -547,6 +547,9 @@ class App:
         self.gen_play_btn = ttk.Button(foot, text="Play / open file",
                                        command=self._open_gen_file, state="disabled")
         self.gen_play_btn.pack(side=tk.LEFT)
+        self.gen_openfolder_btn = ttk.Button(foot, text="Open output folder",
+                                             command=self._open_gen_folder, state="disabled")
+        self.gen_openfolder_btn.pack(side=tk.LEFT, padx=(6, 0))
 
     def _gspin(self, parent, col, label, var, lo, hi, inc):
         cell = ttk.Frame(parent)
@@ -576,6 +579,36 @@ class App:
                     subprocess.run(["xdg-open", str(self._gen_output_file)], check=False)
             except OSError:
                 pass
+
+    def _open_gen_folder(self):
+        if not self._gen_output_file:
+            return
+        folder = self._gen_output_file.parent
+        if not folder.exists():
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["explorer", "/select,", str(self._gen_output_file)], check=False)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", "-R", str(self._gen_output_file)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(folder)], check=False)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _wav_info(path: Path):
+        """(duration_seconds, sample_rate) of a PCM .wav, or (None, None)."""
+        try:
+            import wave
+            w = wave.open(str(path), "rb")
+            try:
+                frames, rate = w.getnframes(), w.getframerate()
+            finally:
+                w.close()
+            return (frames / float(rate) if rate else 0.0), rate
+        except Exception:
+            return None, None
 
     def _gen_log(self, text: str):
         self.root.after(0, self._gen_append, text)
@@ -675,11 +708,19 @@ class App:
         except tk.TclError:
             pass
         self.gen_progress.configure(mode="determinate", value=100 if ok else 0)
-        self.gen_status.set(msg)
         if ok and self._gen_output_file and self._gen_output_file.exists():
+            size_mb = self._gen_output_file.stat().st_size / (1024 * 1024)
+            dur, rate = self._wav_info(self._gen_output_file)
+            info = (f"Done — {dur:.1f}s · {rate} Hz · {size_mb:.1f} MB"
+                    if dur else f"Done — {size_mb:.1f} MB")
+            self.gen_status.set(info)
+            self._gen_append(info)
             self.gen_play_btn.configure(state="normal")
+            self.gen_openfolder_btn.configure(state="normal")
             if self.gen_autoplay.get():
                 self._open_gen_file()
+        else:
+            self.gen_status.set(msg)
 
     def _make_text_panel(self, parent):
         wrap = ttk.Frame(parent)
